@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeftAI Dashboard Pro</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0f0f12; color:#e4e4e7; margin:0; padding:20px; display:flex; flex-direction:column; height:100vh; box-sizing:border-box; }
+  .header { display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #27272a; padding-bottom:12px; margin-bottom:15px; flex-wrap:wrap; gap:8px; }
+  h2 { margin:0; color:#3b82f6; font-size:24px; font-weight:700; }
+  .user-badge { color:#10b981; font-weight:600; font-size:14px; }
+  .actions { display:flex; gap:8px; }
+  button { padding:8px 14px; background:#27272a; color:#f4f4f5; border:1px solid #3f3f46; border-radius:6px; cursor:pointer; font-weight:500; font-size:13px; }
+  button:hover { background:#3f3f46; }
+  button.stop-btn { background:#eab308; border-color:#ca8a04; color:#000; font-weight:700; }
+  button.clear-btn { background:#ef4444; border-color:#dc2626; color:#fff; }
+  #chatbox { flex:1; border:1px solid #27272a; background:#18181b; padding:20px; overflow-y:auto; border-radius:8px; margin-bottom:15px; display:flex; flex-direction:column; gap:12px; }
+  .msg { padding:12px 16px; border-radius:8px; max-width:75%; line-height:1.5; word-wrap:break-word; white-space:pre-wrap; font-size:15px; }
+  .user { background:#2563eb; color:#fff; align-self:flex-end; border-bottom-right-radius:2px; }
+  .bot { background:#27272a; color:#f4f4f5; align-self:flex-start; border-bottom-left-radius:2px; }
+  .input-area { display:flex; gap:10px; }
+  input { flex:1; padding:14px; background:#18181b; border:1px solid #27272a; color:#fff; border-radius:6px; font-size:15px; }
+  input:focus { border-color:#2563eb; outline:none; }
+  .send-btn { background:#2563eb; color:#fff; border:none; font-weight:600; }
+  .send-btn:hover { background:#1d4ed8; }
+  #auth-overlay { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; justify-content:center; align-items:center; z-index:99; }
+  .auth-card { background:#18181b; border:1px solid #27272a; padding:30px; border-radius:12px; width:320px; max-width:90vw; display:flex; flex-direction:column; gap:15px; }
+  .auth-card h3 { margin:0; color:#3b82f6; text-align:center; }
+  .auth-card small { color:#a1a1aa; }
+  @media (max-width:600px){ .msg{max-width:90%;} }
+</style>
+</head>
+<body>
+
+<div id="auth-overlay">
+  <div class="auth-card">
+    <h3>Login to DeftAI</h3>
+    <input type="text" id="login-user" placeholder="Username (chat profile)">
+    <input type="password" id="login-pass" placeholder="Access password" onkeypress="if(event.key==='Enter') loginUser()">
+    <button class="send-btn" onclick="loginUser()">Login / Switch Account</button>
+    <small>Password wahi daalo jo Render mein ACCESS_PASSWORD set kiya hai.</small>
+  </div>
+</div>
+
+<div class="header">
+  <div>
+    <h2>🤖 DeftAI</h2>
+    <span id="active-user" class="user-badge">Not Logged In</span>
+  </div>
+  <div class="actions">
+    <button id="stop-btn" class="stop-btn" onclick="stopGeneration()" style="display:none;">Stop</button>
+    <button onclick="switchUser()">Profiles</button>
+    <button class="clear-btn" onclick="clearMemory()">Clear Memory</button>
+  </div>
+</div>
+
+<div id="chatbox"></div>
+
+<div class="input-area">
+  <input type="text" id="user-input" placeholder="Ask DeftAI anything..." onkeypress="if(event.key==='Enter') sendMessage()">
+  <button class="send-btn" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+  let currentUser = null;
+  let accessCode = '';
+  let chatHistory = [];
+  let abortController = null;
+  const chatbox = document.getElementById('chatbox');
+
+  function addMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+    div.textContent = text; // textContent = XSS safe
+    chatbox.appendChild(div);
+    chatbox.scrollTop = chatbox.scrollHeight;
+    return div;
+  }
+
+  window.onload = () => {
+    const u = localStorage.getItem('deft_current_user');
+    const p = localStorage.getItem('deft_access_code');
+    if (u && p !== null) {
+      currentUser = u; accessCode = p;
+      document.getElementById('auth-overlay').style.display = 'none';
+      loadUserProfile();
+    }
+  };
+
+  function loginUser() {
+    const user = document.getElementById('login-user').value.trim();
+    const pass = document.getElementById('login-pass').value.trim();
+    if (!user) { alert('Username daalo!'); return; }
+    currentUser = user; accessCode = pass;
+    localStorage.setItem('deft_current_user', user);
+    localStorage.setItem('deft_access_code', pass);
+    document.getElementById('auth-overlay').style.display = 'none';
+    loadUserProfile();
+  }
+
+  function switchUser() { document.getElementById('auth-overlay').style.display = 'flex'; }
+
+  function loadUserProfile() {
+    document.getElementById('active-user').textContent = '👤 ' + currentUser;
+    try { chatHistory = JSON.parse(localStorage.getItem('deft_memory_' + currentUser)) || []; }
+    catch { chatHistory = []; }
+    chatbox.innerHTML = '';
+    if (!chatHistory.length) addMsg('bot', `Hello ${currentUser}! I am DeftAI. How can I help you today?`);
+    else chatHistory.forEach(m => addMsg(m.role, m.content));
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('user-input');
+    const text = input.value.trim();
+    if (!text || !currentUser) return;
+
+    addMsg('user', text);
+    chatHistory.push({ role: 'user', content: text });
+    saveMemory();
+    input.value = '';
+
+    const botDiv = addMsg('bot', 'Thinking...');
+    document.getElementById('stop-btn').style.display = 'inline-block';
+    abortController = new AbortController();
+    let fullReply = '';
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-access-code': accessCode },
+        signal: abortController.signal,
+        body: JSON.stringify({ messages: chatHistory.slice(-10) })
+      });
+
+      if (response.status === 401) throw new Error('AUTH');
+      if (response.status === 429) throw new Error('RATE');
+      if (!response.ok) throw new Error('API');
+
+      botDiv.textContent = '';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // incomplete line rakho agle chunk ke liye
+
+        for (const line of lines) {
+          const l = line.trim();
+          if (!l.startsWith('data:')) continue;
+          const data = l.slice(5).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const delta = JSON.parse(data).choices?.[0]?.delta?.content;
+            if (delta) {
+              fullReply += delta;
+              botDiv.textContent = fullReply;
+              chatbox.scrollTop = chatbox.scrollHeight;
+            }
+          } catch {}
+        }
+      }
+      chatHistory.push({ role: 'assistant', content: fullReply });
+      saveMemory();
+
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        botDiv.textContent = (fullReply || '') + ' [Stopped]';
+        if (fullReply) { chatHistory.push({ role: 'assistant', content: fullReply }); saveMemory(); }
+      } else if (err.message === 'AUTH') {
+        botDiv.textContent = '🔒 Password galat hai. "Profiles" button se dobara login karo.';
+      } else if (err.message === 'RATE') {
+        botDiv.textContent = '⏳ Groq ki free limit hit ho gayi. Thodi der baad try karo.';
+      } else {
+        botDiv.textContent = '⚠️ Server error. Render service chal rahi hai? (free plan pe pehli request 30-60 sec le sakti hai)';
+      }
+    } finally {
+      document.getElementById('stop-btn').style.display = 'none';
+    }
+  }
+
+  function stopGeneration() { if (abortController) abortController.abort(); }
+  function saveMemory() { localStorage.setItem('deft_memory_' + currentUser, JSON.stringify(chatHistory)); }
+
+  function clearMemory() {
+    if (confirm(`${currentUser} ki chat history clear karni hai?`)) {
+      localStorage.removeItem('deft_memory_' + currentUser);
+      chatHistory = [];
+      loadUserProfile();
+    }
+  }
+</script>
+</body>
+</html>
